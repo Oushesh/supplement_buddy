@@ -1,6 +1,7 @@
 version: "3.9"
 
 services:
+  # ── Django backend (port 8000) ─────────────────────────────────────────────
   backend:
     build: ./backend
     ports:
@@ -13,6 +14,23 @@ services:
     depends_on:
       - db
 
+  # ── Rust / Axum backend (port 8001) ────────────────────────────────────────
+  # Drop-in high-performance alternative.  Both backends are kept running so
+  # you can compare latency or switch the frontend's NEXT_PUBLIC_API_URL.
+  backend_rust:
+    build: ./backend_rust
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./backend_rust/.env
+    environment:
+      DATABASE_URL: sqlite:///data/supplement_buddy.db
+      HOST: 0.0.0.0
+      PORT: "8001"
+    volumes:
+      - rust_db:/data
+
+  # ── PostgreSQL (used by Django backend) ────────────────────────────────────
   db:
     image: postgres:16-alpine
     environment:
@@ -24,6 +42,7 @@ services:
     ports:
       - "5432:5432"
 
+  # ── Next.js frontend ───────────────────────────────────────────────────────
   frontend:
     image: node:20-alpine
     working_dir: /app
@@ -33,7 +52,9 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # Switch to http://localhost:8001/api to use the Rust backend
       NEXT_PUBLIC_API_URL: http://localhost:8000/api
 
 volumes:
   postgres_data:
+  rust_db:
