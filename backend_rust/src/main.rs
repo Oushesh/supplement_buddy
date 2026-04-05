@@ -13,14 +13,25 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let seed_mode = std::env::args().any(|a| a == "--seed");
+
     let cfg = Config::from_env();
 
     tracing::info!("Connecting to database: {}", cfg.database_url);
-    let db = db::connect(&cfg.database_url)
+    let database = db::connect(&cfg.database_url)
         .await
         .expect("Failed to connect to database");
 
-    let app = build_router(db, &cfg.cors_origins);
+    if seed_mode {
+        tracing::info!("Seed mode: populating sample data…");
+        db::seed_database(&database)
+            .await
+            .expect("Failed to seed database");
+        tracing::info!("Done.");
+        return;
+    }
+
+    let app = build_router(database, &cfg.cors_origins);
 
     let addr: SocketAddr = format!("{}:{}", cfg.host, cfg.port)
         .parse()
