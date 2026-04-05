@@ -1,11 +1,29 @@
+use std::str::FromStr;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::sqlite::SqliteConnectOptions;
 
+/*
 /// Create (or connect to) the SQLite pool and run embedded migrations.
 pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect(database_url)
         .await?;
+
+    run_migrations(&pool).await?;
+    Ok(pool)
+}
+*/
+
+// New connection with option to create the db if file is missing
+pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+    //1. Parse the string into connection options
+    let connection_options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+    // 2. Tell SQLX to create .db file if it isn't there
+
+    //Connect using those specific options
+    let pool = SqlitePoolOptions::new().max_connections(5).connect_with(connection_options).await?;
+    //Use connect_with instead of connect
 
     run_migrations(&pool).await?;
     Ok(pool)
