@@ -16,11 +16,11 @@ async fn main() {
     let cfg = Config::from_env();
 
     tracing::info!("Connecting to database: {}", cfg.database_url);
-    let pool = db::connect(&cfg.database_url)
+    let db = db::connect(&cfg.database_url)
         .await
         .expect("Failed to connect to database");
 
-    let app = build_router(pool, &cfg.cors_origins);
+    let app = build_router(db, &cfg.cors_origins);
 
     let addr: SocketAddr = format!("{}:{}", cfg.host, cfg.port)
         .parse()

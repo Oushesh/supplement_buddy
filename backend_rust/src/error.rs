@@ -9,7 +9,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] sea_orm::DbErr),
 
     #[error("Not found")]
     NotFound,
@@ -67,8 +67,7 @@ mod tests {
 
     #[tokio::test]
     async fn app_error_database_returns_500() {
-        // Construct a sqlx error via a decode error (no real DB needed)
-        let db_err = sqlx::Error::RowNotFound;
+        let db_err = sea_orm::DbErr::RecordNotFound("test".to_string());
         let res = AppError::Database(db_err).into_response();
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = body_json(res).await;

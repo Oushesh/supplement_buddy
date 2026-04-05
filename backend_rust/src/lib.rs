@@ -1,13 +1,16 @@
 pub mod config;
 pub mod db;
+pub mod entities;
 pub mod error;
 pub mod handlers;
+pub mod migration;
 pub mod models;
 
 use axum::{
     routing::{get, put},
     Router,
 };
+use sea_orm::DatabaseConnection;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use handlers::{
@@ -18,9 +21,9 @@ use handlers::{
     },
 };
 
-/// Builds the Axum router with the given SQLite pool and CORS origins.
+/// Builds the Axum router with the given SeaORM database connection and CORS origins.
 /// Extracted into the library so integration tests can call it directly.
-pub fn build_router(pool: sqlx::SqlitePool, cors_origins: &[String]) -> Router {
+pub fn build_router(db: DatabaseConnection, cors_origins: &[String]) -> Router {
     let cors = if cors_origins.is_empty() {
         CorsLayer::permissive()
     } else {
@@ -42,5 +45,5 @@ pub fn build_router(pool: sqlx::SqlitePool, cors_origins: &[String]) -> Router {
         // Middleware
         .layer(cors)
         .layer(TraceLayer::new_for_http())
-        .with_state(pool)
+        .with_state(db)
 }

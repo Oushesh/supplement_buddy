@@ -2,42 +2,34 @@ use axum::{
     extract::{Query, State},
     Json,
 };
-use sqlx::SqlitePool;
+use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait, QueryOrder, QuerySelect};
 
 use crate::{
+    entities::search_query::{Column, Entity as SearchQueryEntity},
     error::AppError,
     models::{Page, PaginationParams, SearchQuery},
 };
 
 /// GET /api/search-queries/
 pub async fn list_search_queries(
-    State(pool): State<SqlitePool>,
+    State(db): State<DatabaseConnection>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Page<SearchQuery>>, AppError> {
     let page = params.page.max(1);
     let page_size = params.page_size.clamp(1, 100);
-    let offset = (page - 1) * page_size;
+    let offset = ((page - 1) * page_size) as u64;
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM search_queries")
-        .fetch_one(&pool)
-        .await?;
+    let count = SearchQueryEntity::find().count(&db).await? as i64;
 
-    let rows = sqlx::query_as::<_, SearchQuery>(
-        r#"
-        SELECT
-            id,
-            query,
-            results,
-            created_at
-        FROM search_queries
-        ORDER BY created_at DESC
-        LIMIT ? OFFSET ?
-        "#,
-    )
-    .bind(page_size)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await?;
+    let rows: Vec<SearchQuery> = SearchQueryEntity::find()
+        .order_by_desc(Column::CreatedAt)
+        .offset(offset)
+        .limit(page_size as u64)
+        .all(&db)
+        .await?
+        .into_iter()
+        .map(SearchQuery::from)
+        .collect();
 
     Ok(Json(Page {
         count,

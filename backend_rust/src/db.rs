@@ -1,73 +1,54 @@
-use std::str::FromStr;
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
-use sqlx::sqlite::SqliteConnectOptions;
+use sea_orm::{ConnectOptions, Database, DatabaseConnection, DbErr};
+use sea_orm_migration::MigratorTrait;
 
-/*
-/// Create (or connect to) the SQLite pool and run embedded migrations.
-pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
-    let pool = SqlitePoolOptions::new()
+use crate::migration::Migrator;
+
+/// Connect to the database and run all pending migrations.
+/// For file-based SQLite databases, creates the file if it does not already exist.
+pub async fn connect(database_url: &str) -> Result<DatabaseConnection, DbErr> {
+    ensure_sqlite_file_exists(database_url);
+
+    let opt = ConnectOptions::new(database_url.to_string())
         .max_connections(5)
-        .connect(database_url)
-        .await?;
+        .to_owned();
 
-    run_migrations(&pool).await?;
-    Ok(pool)
-}
-*/
-
-// New connection with option to create the db if file is missing
-pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
-    //1. Parse the string into connection options
-    let connection_options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
-    // 2. Tell SQLX to create .db file if it isn't there
-
-    //Connect using those specific options
-    let pool = SqlitePoolOptions::new().max_connections(5).connect_with(connection_options).await?;
-    //Use connect_with instead of connect
-
-    run_migrations(&pool).await?;
-    Ok(pool)
+    let db = Database::connect(opt).await?;
+    Migrator::up(&db, None).await?;
+    Ok(db)
 }
 
 /// Public alias used by integration tests so they can set up an in-memory DB.
-pub async fn run_migrations_for_test(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    run_migrations(pool).await
+pub async fn run_migrations_for_test(db: &DatabaseConnection) -> Result<(), DbErr> {
+    Migrator::up(db, None).await
 }
 
-/// Inline migrations — avoids a separate `migrations/` folder so the binary
-/// is fully self-contained when deployed.
-async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS supplements (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            name         TEXT    NOT NULL,
-            brand        TEXT    NOT NULL DEFAULT '',
-            category     TEXT    NOT NULL DEFAULT '',
-            description  TEXT    NOT NULL DEFAULT '',
-            ingredients  TEXT    NOT NULL DEFAULT '',
-            serving_size TEXT    NOT NULL DEFAULT '',
-            splade_vector TEXT,
-            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-            updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-        );
-        "#,
-    )
-    .execute(pool)
-    .await?;
+/// Pre-creates the SQLite database file if the URL points to a file path that
+/// does not yet exist. This mirrors the `create_if_missing` behaviour from sqlx
+/// that sea-orm's `ConnectOptions` does not currently expose.
+fn ensure_sqlite_file_exists(database_url: &str) {
+    // Extract the filesystem path from common SQLite URL formats:
+    //   sqlite://./relative/path.db  ->  ./relative/path.db
+    //   sqlite:///absolute/path.db   ->  /absolute/path.db
+    //   sqlite::memory:              ->  skip (in-memory)
+    let path_str = if let Some(p) = database_url.strip_prefix("sqlite://./") {
+        format!("./{p}")
+    } else if let Some(p) = database_url.strip_prefix("sqlite:///") {
+        format!("/{p}")
+    } else {
+        return; // in-memory, bare file, or unknown format — leave to the driver
+    };
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS search_queries (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            query      TEXT NOT NULL,
-            results    TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-        );
-        "#,
-    )
-    .execute(pool)
-    .await?;
+    if path_str.is_empty() {
+        return;
+    }
 
-    Ok(())
+    let path = std::path::Path::new(&path_str);
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        let _ = std::fs::File::create(path);
+    }
 }
