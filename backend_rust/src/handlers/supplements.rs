@@ -4,11 +4,17 @@ use axum::{
     Json,
 };
 use chrono::Utc;
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
+    IntoActiveModel, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
+};
+use sea_orm::Condition;
 use serde::Deserialize;
-use serde_json::{Value};
-use sqlx::SqlitePool;
+use serde_json::Value;
 
 use crate::{
+    entities::supplement::{self, Column, Entity as SupplementEntity},
+    entities::search_query,
     error::AppError,
     models::{CreateSupplement, Page, PaginationParams, Supplement},
 };
@@ -18,33 +24,24 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 pub async fn list_supplements(
-    State(pool): State<SqlitePool>,
+    State(db): State<DatabaseConnection>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Page<Supplement>>, AppError> {
     let page = params.page.max(1);
     let page_size = params.page_size.clamp(1, 100);
-    let offset = (page - 1) * page_size;
+    let offset = ((page - 1) * page_size) as u64;
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM supplements")
-        .fetch_one(&pool)
-        .await?;
+    let count = SupplementEntity::find().count(&db).await? as i64;
 
-    let rows = sqlx::query_as::<_, Supplement>(
-        r#"
-        SELECT
-            id, name, brand, category, description, ingredients, serving_size,
-            splade_vector,
-            created_at,
-            updated_at
-        FROM supplements
-        ORDER BY name
-        LIMIT ? OFFSET ?
-        "#,
-    )
-    .bind(page_size)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await?;
+    let rows: Vec<Supplement> = SupplementEntity::find()
+        .order_by_asc(Column::Name)
+        .offset(offset)
+        .limit(page_size as u64)
+        .all(&db)
+        .await?
+        .into_iter()
+        .map(Supplement::from)
+        .collect();
 
     Ok(Json(Page {
         count,
@@ -59,7 +56,7 @@ pub async fn list_supplements(
 // ---------------------------------------------------------------------------
 
 pub async fn create_supplement(
-    State(pool): State<SqlitePool>,
+    State(db): State<DatabaseConnection>,
     Json(body): Json<CreateSupplement>,
 ) -> Result<(StatusCode, Json<Supplement>), AppError> {
     let name = body
@@ -68,28 +65,23 @@ pub async fn create_supplement(
         .filter(|n| !n.is_empty())
         .ok_or_else(|| AppError::BadRequest("'name' is required".to_string()))?;
 
-    let now = Utc::now();
+    let now = Utc::now().to_rfc3339();
 
-    let id = sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO supplements (name, brand, category, description, ingredients, serving_size, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING id
-        "#,
-    )
-    .bind(&name)
-    .bind(&body.brand)
-    .bind(&body.category)
-    .bind(&body.description)
-    .bind(&body.ingredients)
-    .bind(&body.serving_size)
-    .bind(now.to_rfc3339())
-    .bind(now.to_rfc3339())
-    .fetch_one(&pool)
-    .await?;
+    let new_supplement = supplement::ActiveModel {
+        name: Set(name),
+        brand: Set(body.brand),
+        category: Set(body.category),
+        description: Set(body.description),
+        ingredients: Set(body.ingredients),
+        serving_size: Set(body.serving_size),
+        splade_vector: Set(None),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    };
 
-    let supplement = fetch_supplement_by_id(&pool, id).await?;
-    Ok((StatusCode::CREATED, Json(supplement)))
+    let inserted = new_supplement.insert(&db).await?;
+    Ok((StatusCode::CREATED, Json(Supplement::from(inserted))))
 }
 
 // ---------------------------------------------------------------------------
@@ -97,11 +89,11 @@ pub async fn create_supplement(
 // ---------------------------------------------------------------------------
 
 pub async fn get_supplement(
-    State(pool): State<SqlitePool>,
+    State(db): State<DatabaseConnection>,
     Path(id): Path<i64>,
 ) -> Result<Json<Supplement>, AppError> {
-    let supplement = fetch_supplement_by_id(&pool, id).await?;
-    Ok(Json(supplement))
+    let model = fetch_supplement_by_id(&db, id).await?;
+    Ok(Json(Supplement::from(model)))
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +106,7 @@ pub struct SearchParams {
 }
 
 pub async fn search_supplements(
-    State(pool): State<SqlitePool>,
+    State(db): State<DatabaseConnection>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Vec<Supplement>>, AppError> {
     let query = params
@@ -123,42 +115,35 @@ pub async fn search_supplements(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::BadRequest("Query parameter 'q' is required".to_string()))?;
 
-    // Text-search fallback (SPLADE inference lives in a separate Python service)
     let pattern = format!("%{}%", query);
-    let results = sqlx::query_as::<_, Supplement>(
-        r#"
-        SELECT
-            id, name, brand, category, description, ingredients, serving_size,
-            splade_vector,
-            created_at,
-            updated_at
-        FROM supplements
-        WHERE  name        LIKE ? COLLATE NOCASE
-            OR brand       LIKE ? COLLATE NOCASE
-            OR description LIKE ? COLLATE NOCASE
-            OR ingredients LIKE ? COLLATE NOCASE
-        ORDER BY name
-        "#,
-    )
-    .bind(&pattern)
-    .bind(&pattern)
-    .bind(&pattern)
-    .bind(&pattern)
-    .fetch_all(&pool)
-    .await?;
+
+    let results: Vec<Supplement> = SupplementEntity::find()
+        .filter(
+            Condition::any()
+                .add(Column::Name.like(&pattern))
+                .add(Column::Brand.like(&pattern))
+                .add(Column::Description.like(&pattern))
+                .add(Column::Ingredients.like(&pattern)),
+        )
+        .order_by_asc(Column::Name)
+        .all(&db)
+        .await?
+        .into_iter()
+        .map(Supplement::from)
+        .collect();
 
     // Persist query for analytics
     let result_ids: Vec<i64> = results.iter().map(|s| s.id).collect();
     let results_json = serde_json::to_string(&result_ids).unwrap_or_else(|_| "[]".to_string());
-    let now = Utc::now();
-    sqlx::query(
-        "INSERT INTO search_queries (query, results, created_at) VALUES (?, ?, ?)",
-    )
-    .bind(&query)
-    .bind(&results_json)
-    .bind(now.to_rfc3339())
-    .execute(&pool)
-    .await?;
+    let now = Utc::now().to_rfc3339();
+
+    let new_query = search_query::ActiveModel {
+        query: Set(query),
+        results: Set(results_json),
+        created_at: Set(now),
+        ..Default::default()
+    };
+    new_query.insert(&db).await?;
 
     Ok(Json(results))
 }
@@ -167,52 +152,35 @@ pub async fn search_supplements(
 // Helper
 // ---------------------------------------------------------------------------
 
-async fn fetch_supplement_by_id(pool: &SqlitePool, id: i64) -> Result<Supplement, AppError> {
-    sqlx::query_as::<_, Supplement>(
-        r#"
-        SELECT
-            id, name, brand, category, description, ingredients, serving_size,
-            splade_vector,
-            created_at,
-            updated_at
-        FROM supplements
-        WHERE id = ?
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(AppError::NotFound)
+async fn fetch_supplement_by_id(
+    db: &DatabaseConnection,
+    id: i64,
+) -> Result<supplement::Model, AppError> {
+    SupplementEntity::find_by_id(id)
+        .one(db)
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
 // ---------------------------------------------------------------------------
-// splade_vector update — called by the indexer script
 // PUT /api/supplements/:id/splade-vector
 // ---------------------------------------------------------------------------
 
 pub async fn update_splade_vector(
-    State(pool): State<SqlitePool>,
+    State(db): State<DatabaseConnection>,
     Path(id): Path<i64>,
     Json(body): Json<Value>,
 ) -> Result<Json<Supplement>, AppError> {
-    let now = Utc::now();
+    let model = fetch_supplement_by_id(&db, id).await?;
+    let now = Utc::now().to_rfc3339();
+
     let vec_json = serde_json::to_string(&body)
         .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {e}")))?;
 
-    let rows_affected = sqlx::query(
-        "UPDATE supplements SET splade_vector = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(&vec_json)
-    .bind(now.to_rfc3339())
-    .bind(id)
-    .execute(&pool)
-    .await?
-    .rows_affected();
+    let mut active = model.into_active_model();
+    active.splade_vector = Set(Some(vec_json));
+    active.updated_at = Set(now);
 
-    if rows_affected == 0 {
-        return Err(AppError::NotFound);
-    }
-
-    let supplement = fetch_supplement_by_id(&pool, id).await?;
-    Ok(Json(supplement))
+    let updated = active.update(&db).await?;
+    Ok(Json(Supplement::from(updated)))
 }

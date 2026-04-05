@@ -1,12 +1,13 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::entities;
+
 // ---------------------------------------------------------------------------
-// Supplement
+// Supplement API response model
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Supplement {
     pub id: i64,
     pub name: String,
@@ -17,8 +18,28 @@ pub struct Supplement {
     pub serving_size: String,
     /// SPLADE sparse vector stored as JSON (token → weight map)
     pub splade_vector: Option<Value>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<entities::supplement::Model> for Supplement {
+    fn from(m: entities::supplement::Model) -> Self {
+        Supplement {
+            id: m.id,
+            name: m.name,
+            brand: m.brand,
+            category: m.category,
+            description: m.description,
+            ingredients: m.ingredients,
+            serving_size: m.serving_size,
+            splade_vector: m
+                .splade_vector
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
 }
 
 /// Payload accepted when creating a supplement via POST /api/supplements/
@@ -38,16 +59,27 @@ pub struct CreateSupplement {
 }
 
 // ---------------------------------------------------------------------------
-// SearchQuery
+// SearchQuery API response model
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
     pub id: i64,
     pub query: String,
     /// JSON array of matched supplement IDs
     pub results: Value,
-    pub created_at: DateTime<Utc>,
+    pub created_at: String,
+}
+
+impl From<entities::search_query::Model> for SearchQuery {
+    fn from(m: entities::search_query::Model) -> Self {
+        SearchQuery {
+            id: m.id,
+            query: m.query,
+            results: serde_json::from_str(&m.results).unwrap_or(Value::Array(vec![])),
+            created_at: m.created_at,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

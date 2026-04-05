@@ -4,19 +4,18 @@
 //! tests are fully isolated and require no external services.
 
 use axum_test::TestServer;
+use sea_orm::{ConnectOptions, Database};
 use serde_json::{json, Value};
-use sqlx::sqlite::SqlitePoolOptions;
 use supplement_buddy_backend::{build_router, db::run_migrations_for_test};
 
 async fn make_server() -> TestServer {
     // max_connections(1) ensures all queries share the same in-memory database
-    let pool = SqlitePoolOptions::new()
+    let opt = ConnectOptions::new("sqlite::memory:")
         .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("in-memory DB");
-    run_migrations_for_test(&pool).await.expect("migrations");
-    let app = build_router(pool, &[]);
+        .to_owned();
+    let db = Database::connect(opt).await.expect("in-memory DB");
+    run_migrations_for_test(&db).await.expect("migrations");
+    let app = build_router(db, &[]);
     TestServer::new(app).expect("test server")
 }
 

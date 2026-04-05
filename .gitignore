@@ -44,3 +44,4 @@ Thumbs.db
 # Fine-tuning data (large files)
 scripts/finetune/data/
 target/
+backend_rust/target/
