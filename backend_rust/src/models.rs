@@ -76,3 +76,66 @@ fn default_page() -> i64 {
 fn default_page_size() -> i64 {
     20
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn pagination_params_defaults() {
+        let params: PaginationParams =
+            serde_json::from_value(json!({})).expect("deserialize");
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 20);
+    }
+
+    #[test]
+    fn pagination_params_custom_values() {
+        let params: PaginationParams =
+            serde_json::from_value(json!({ "page": 3, "page_size": 50 })).expect("deserialize");
+        assert_eq!(params.page, 3);
+        assert_eq!(params.page_size, 50);
+    }
+
+    #[test]
+    fn page_serializes_correctly() {
+        let page: Page<String> = Page {
+            count: 42,
+            page: 2,
+            page_size: 10,
+            results: vec!["a".to_string(), "b".to_string()],
+        };
+        let json = serde_json::to_value(&page).expect("serialize");
+        assert_eq!(json["count"], 42);
+        assert_eq!(json["page"], 2);
+        assert_eq!(json["page_size"], 10);
+        assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn create_supplement_name_is_optional() {
+        let with_name: CreateSupplement =
+            serde_json::from_value(json!({ "name": "Zinc" })).expect("deserialize");
+        assert_eq!(with_name.name.as_deref(), Some("Zinc"));
+
+        let without_name: CreateSupplement =
+            serde_json::from_value(json!({})).expect("deserialize");
+        assert!(without_name.name.is_none());
+    }
+
+    #[test]
+    fn create_supplement_optional_string_fields_default_to_empty() {
+        let s: CreateSupplement =
+            serde_json::from_value(json!({ "name": "Test" })).expect("deserialize");
+        assert_eq!(s.brand, "");
+        assert_eq!(s.category, "");
+        assert_eq!(s.description, "");
+        assert_eq!(s.ingredients, "");
+        assert_eq!(s.serving_size, "");
+    }
+}
